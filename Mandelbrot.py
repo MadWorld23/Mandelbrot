@@ -1,6 +1,43 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from numba import jit
+import atexit
+import shutil
+import os
+import tempfile
+
+# ── Cache-Verwaltung ──────────────────────────────────────────
+_cache_dir = None
+_script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
+
+def _setup_temp_cache():
+    """Erstellt ein temporäres Cache-Verzeichnis für Numba."""
+    global _cache_dir
+    _cache_dir = tempfile.mkdtemp(prefix="numba_mandelbrot_")
+    os.environ['NUMBA_CACHE_DIR'] = _cache_dir
+
+def _cleanup_cache():
+    """Löscht ALLE Cache-Verzeichnisse beim Programmende."""
+    global _cache_dir
+    
+    # 1) Numba-Temp-Ordner löschen
+    if _cache_dir and os.path.exists(_cache_dir):
+        try:
+            shutil.rmtree(_cache_dir)
+        except Exception:
+            pass
+    
+    # 2) __pycache__ im Skript-Verzeichnis löschen
+    pycache_path = os.path.join(_script_dir, "__pycache__")
+    if os.path.exists(pycache_path):
+        try:
+            shutil.rmtree(pycache_path)
+        except Exception:
+            pass
+
+# Setup & Cleanup registrieren
+_setup_temp_cache()
+atexit.register(_cleanup_cache)
 
 # ── Numba-optimierte Mandelbrot-Berechnung ────────────────────
 @jit(nopython=True, cache=True)
@@ -56,36 +93,30 @@ class MandelbrotViewer:
         self.width = width
         self.height = height
         
-        # Standardansicht der gesamten Mandelbrot-Menge
         self.x_min = -2.5
         self.x_max = 1.0
         self.y_min = -1.25
         self.y_max = 1.25
         
-        # Zoomeinstellungen
-        self.zoom_step = 3.0  # Wie viel fach pro Klick
+        self.zoom_step = 3.0
         self.max_iter = 100
         
-        # Farbpalette
         self.cmap = 'magma'
         self.colormaps = ['magma', 'plasma', 'inferno', 'viridis', 
                           'twilight_shifted', 'hot', 'cool', 'ocean']
         self.cmap_idx = 0
         
-        # Plot aufsetzen
         self.fig, self.ax = plt.subplots(figsize=(10, 10))
         self.ax.set_axis_off()
         self.fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
         self.fig.patch.set_facecolor('black')
         
-        # Erstes Bild
         self.img = self.ax.imshow(
             self._compute(), cmap=self.cmap, origin='lower',
             extent=[self.x_min, self.x_max, self.y_min, self.y_max],
             vmin=0, vmax=self.max_iter
         )
         
-        # Info-Text
         self.info_text = self.ax.text(
             0.01, 0.01, '', transform=self.ax.transAxes,
             color='white', fontsize=10, family='monospace',
@@ -94,7 +125,6 @@ class MandelbrotViewer:
         )
         self._update_info()
         
-        # Hilfetext oben rechts
         self.ax.text(
             0.99, 0.99, 
             'Links=Zoom rein | Rechts=Zoom raus | Rad=Feinzoom\n'
@@ -105,13 +135,13 @@ class MandelbrotViewer:
             bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7)
         )
         
-        # Events verbinden
         self.fig.canvas.mpl_connect('button_press_event', self._on_click)
         self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
         self.fig.canvas.mpl_connect('key_press_event', self._on_key)
         
         print("\n╔══════════════════════════════════════╗")
         print("║   Interaktiver Mandelbrot-Viewer     ║")
+        print("║   (Numba + Auto-Cleanup alles)       ║")
         print("╠══════════════════════════════════════╣")
         print("║ Linksklick    → Zoom rein           ║")
         print("║ Rechtsklick   → Zoom raus           ║")
@@ -125,14 +155,12 @@ class MandelbrotViewer:
         plt.show()
     
     def _compute(self):
-        """Berechnet das aktuelle Bild."""
         return mandelbrot_compute(
             self.height, self.width, self.max_iter,
             self.x_min, self.x_max, self.y_min, self.y_max
         )
     
     def _refresh(self):
-        """Berechnet neu und aktualisiert die Anzeige."""
         self.img.set_data(self._compute())
         self.img.set_extent([self.x_min, self.x_max, self.y_min, self.y_max])
         self.img.set_clim(vmin=0, vmax=self.max_iter)
@@ -140,9 +168,8 @@ class MandelbrotViewer:
         self.fig.canvas.draw_idle()
     
     def _update_info(self):
-        """Aktualisiert den Info-Text."""
         x_range = self.x_max - self.x_min
-        zoom = 3.5 / x_range  # 3.5 = Startbereich
+        zoom = 3.5 / x_range
         cx = (self.x_min + self.x_max) / 2
         cy = (self.y_min + self.y_max) / 2
         self.info_text.set_text(
@@ -152,7 +179,6 @@ class MandelbrotViewer:
         )
     
     def _zoom_at(self, x, y, factor):
-        """Zoomt mit Zentrum (x, y) um den Faktor 'factor'."""
         x_range = (self.x_max - self.x_min) / factor
         y_range = (self.y_max - self.y_min) / factor
         
@@ -161,32 +187,27 @@ class MandelbrotViewer:
         self.y_min = y - y_range / 2
         self.y_max = y + y_range / 2
         
-        # Iterationen automatisch anpassen
         zoom = 3.5 / x_range
         self.max_iter = max(100, int(100 + 60 * np.log2(max(1, zoom))))
         
         self._refresh()
     
-    # ── Event-Handler ──────────────────────────────────────────
     def _on_click(self, event):
         if event.inaxes != self.ax:
             return
         
-        if event.button == 1:  # Linksklick → reinzoomen
+        if event.button == 1:
             self._zoom_at(event.xdata, event.ydata, self.zoom_step)
-            print(f".Zoom rein → ({event.xdata:+.8f}, {event.ydata:+.8f}i)")
-            
-        elif event.button == 3:  # Rechtsklick → rauszoomen
+        elif event.button == 3:
             self._zoom_at(event.xdata, event.ydata, 1.0 / self.zoom_step)
-            print(f"  Zoom raus ← ({event.xdata:+.8f}, {event.ydata:+.8f}i)")
     
     def _on_scroll(self, event):
         if event.inaxes != self.ax:
             return
         
-        if event.button == 'up':  # Mausrad hoch → rein
+        if event.button == 'up':
             factor = 1.3
-        elif event.button == 'down':  # Mausrad runter → raus
+        elif event.button == 'down':
             factor = 1.0 / 1.3
         else:
             return
@@ -194,35 +215,26 @@ class MandelbrotViewer:
         self._zoom_at(event.xdata, event.ydata, factor)
     
     def _on_key(self, event):
-        if event.key == 'r':  # Reset
+        if event.key == 'r':
             self.x_min = -2.5
             self.x_max = 1.0
             self.y_min = -1.25
             self.y_max = 1.25
             self.max_iter = 100
             self._refresh()
-            print("⟲ Reset zur Startansicht")
-            
-        elif event.key == 'c':  # Farbwechsel
+        elif event.key == 'c':
             self.cmap_idx = (self.cmap_idx + 1) % len(self.colormaps)
             self.cmap = self.colormaps[self.cmap_idx]
             self.img.set_cmap(self.cmap)
             self.fig.canvas.draw_idle()
-            print(f" Farbschema: {self.cmap}")
-            
-        elif event.key == '+' or event.key == '=':  # Mehr Iterationen
+        elif event.key in ('+', '='):
             self.max_iter = int(self.max_iter * 1.5)
             self._refresh()
-            print(f"  Iterationen ↑ {self.max_iter}")
-            
-        elif event.key == '-':  # Weniger Iterationen
+        elif event.key == '-':
             self.max_iter = max(50, int(self.max_iter / 1.5))
             self._refresh()
-            print(f"  Iterationen ↓ {self.max_iter}")
-            
-        elif event.key == 'q':  # Beenden
+        elif event.key == 'q':
             plt.close(self.fig)
-            print("Beendet.")
 
 
 if __name__ == "__main__":
